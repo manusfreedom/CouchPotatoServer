@@ -41,19 +41,14 @@ config = [{
                 {
                     'name': 'directory',
                     'type': 'directory',
-                    'description': 'Where should Transmission saved the downloaded files?',
-                },
-                {
-                    'name': 'renamerDirectory',
-                    'type': 'directory',
-                    'description': 'Where should Renamer scan',
+                    'description': 'Download to this directory. Keep empty for default Transmission download directory.',
                 },
                 {
                     'name': 'ratio',
                     'default': 10,
-                    'type': 'int',
+                    'type': 'float',
                     'advanced': True,
-                    'description': 'Stop transfer when reaching ratio (in percent)',
+                    'description': 'Stop transfer when reaching ratio',
                 },
                 {
                     'name': 'ratiomode',

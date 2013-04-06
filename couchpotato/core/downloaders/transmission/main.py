@@ -1,13 +1,16 @@
 from base64 import b64encode
-from couchpotato.core.downloaders.base import Downloader
+from couchpotato.core.downloaders.base import Downloader, StatusList
 from couchpotato.core.helpers.encoding import isInt
 from couchpotato.core.logger import CPLog
+from couchpotato.environment import Env
+from datetime import timedelta
 import httplib
 import json
 import os.path
 import re
-import urllib2
 import shutil
+import traceback
+import urllib2
 
 log = CPLog(__name__)
 
@@ -28,21 +31,23 @@ class Transmission(Downloader):
             return False
 
         # Set parameters for Transmission
-        folder_name = self.createFileName(data, filedata, movie)[:-len(data.get('type')) - 1]
-        folder_path = os.path.join(self.conf('directory', default = ''), folder_name).rstrip(os.path.sep)
-
-        # Create the empty folder to download too
-        self.makeDir(folder_path)
-
         params = {
             'paused': self.conf('paused', default = 0),
-            'download-dir': folder_path
         }
+
+        if len(self.conf('directory', default = '')) > 0:
+            folder_name = self.createFileName(data, filedata, movie)[:-len(data.get('type')) - 1]
+            folder_path = os.path.join(self.conf('directory', default = ''), folder_name).rstrip(os.path.sep)
+
+            # Create the empty folder to download too
+            self.makeDir(folder_path)
+
+            params['download-dir'] = folder_path
 
         torrent_params = {}
         if self.conf('ratio'):
             torrent_params = {
-                'seedRatioLimit': self.conf('ratio') / 100,
+                'seedRatioLimit': self.conf('ratio'),
                 'seedRatioMode': self.conf('ratiomode')
             }
 
@@ -59,14 +64,17 @@ class Transmission(Downloader):
             else:
                 remote_torrent = trpc.add_torrent_file(b64encode(filedata), arguments = params)
 
+            if not remote_torrent:
+                return False
+
             # Change settings of added torrents
-            if torrent_params:
+            elif torrent_params:
                 trpc.set_torrent(remote_torrent['torrent-added']['hashString'], torrent_params)
 
             log.info('Torrent sent to Transmission successfully.')
-            return True
-        except Exception, err:
-            log.error('Failed to change settings for transfer: %s', err)
+            return self.downloadReturnId(remote_torrent['torrent-added']['hashString'])
+        except:
+            log.error('Failed to change settings for transfer: %s', traceback.format_exc())
             return False
 
     def getAllDownloadStatus(self):
@@ -91,8 +99,7 @@ class Transmission(Downloader):
             log.error('Failed getting queue: %s', err)
             return False
 
-        statuses = []
-        log.debug('%s', queue)
+        statuses = StatusList(self)
 
         # Get torrents status
             # CouchPotato Status
@@ -110,48 +117,41 @@ class Transmission(Downloader):
         #To do :
         #   add checking file
         #   manage no peer in a range time => fail
+
         for item in queue['torrents']:
-            log.debug('name=%s / id=%s / downloadDir=%s / hashString=%s / percentDone=%s / status=%s / eta=%s / uploadRatio=%s / confRatio=%s / isFinished=%s', (item['name'], item['id'], item['downloadDir'], item['hashString'], item['percentDone'], item['status'], item['eta'], item['uploadRatio'], self.conf('ratio'), item['isFinished'] ))
-            if not os.path.isdir(self.conf('renamerDirectory')):
-                log.debug('Directory of Renamer have to exist.')
+            log.debug('name=%s / id=%s / downloadDir=%s / hashString=%s / percentDone=%s / status=%s / eta=%s / uploadRatio=%s / confRatio=%s / isFinished=%s', (item['name'], item['id'], item['downloadDir'], item['hashString'], item['percentDone'], item['status'], item['eta'], item['uploadRatio'], self.conf('ratio'), item['isFinished']))
+
+            if not os.path.isdir(Env.setting('from', 'renamer')):
+                log.error('Renamer "from" folder doesn\'t to exist.')
                 return
-            if (item['percentDone'] * 100) >= 100 and (item['status'] == 6 or item['status'] == 0) and (item['uploadRatio'] * 100) > self.conf('ratio'):
+
+            if (item['percentDone'] * 100) >= 100 and (item['status'] == 6 or item['status'] == 0) and item['uploadRatio'] > self.conf('ratio'):
                 try:
-                    doMove = True
                     trpc.stop_torrent(item['hashString'], {})
-                    fixedDownloadDir = item['downloadDir'].rstrip(os.path.sep)
-                    if fixedDownloadDir == self.conf('directory', default = '').rstrip(os.path.sep):
-                        fixedDownloadDir = os.path.join(fixedDownloadDir,item['name']).rstrip(os.path.sep)
-                    if fixedDownloadDir == self.conf('directory', default = '').rstrip(os.path.sep):
-                        doMove = False
-                        log.error('Bad folder to move: %s', fixedDownloadDir)
-                    if not os.path.isdir(fixedDownloadDir):
-                        doMove = False
-                        log.error('Missing folder: %s', fixedDownloadDir)
-                    if doMove:
-                        log.info('Moving folder from "%s" to "%s"', (fixedDownloadDir, self.conf('renamerDirectory')))
-                        shutil.move(fixedDownloadDir, self.conf('renamerDirectory'))
-                        statuses.append({
-                            'name': item['downloadDir'],
-                            'status': 'completed',
-                            'original_status': item['status'],
-                            'timeleft': 0,
-                        })
-                        trpc.remove_torrent(item['hashString'], True, {})
+                    statuses.append({
+                        'id': item['hashString'],
+                        'name': item['name'],
+                        'status': 'completed',
+                        'original_status': item['status'],
+                        'timeleft': str(timedelta(seconds = 0)),
+                        'folder': os.path.join(item['downloadDir'], item['name']),
+                    })
                 except Exception, err:
                     log.error('Failed to stop and remove torrent "%s" with error: %s', (item['name'], err))
                     statuses.append({
-                        'name': item['downloadDir'],
-                        'status': 'busy',
+                        'id': item['hashString'],
+                        'name': item['name'],
+                        'status': 'failed',
                         'original_status': item['status'],
-                        'timeleft': 0,
+                        'timeleft': str(timedelta(seconds = 0)),
                     })
             else:
                 statuses.append({
-                    'name': item['downloadDir'],
+                    'id': item['hashString'],
+                    'name': item['name'],
                     'status': 'busy',
                     'original_status': item['status'],
-                    'timeleft': item['eta'],
+                    'timeleft': str(timedelta(seconds = item['eta'])), # Is ETA in seconds??
                 })
 
         return statuses

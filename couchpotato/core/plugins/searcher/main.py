@@ -50,7 +50,12 @@ class Searcher(Plugin):
 }"""},
         })
 
-        # Schedule cronjob
+        addEvent('app.load', self.setCrons)
+        addEvent('setting.save.searcher.cron_day.after', self.setCrons)
+        addEvent('setting.save.searcher.cron_hour.after', self.setCrons)
+        addEvent('setting.save.searcher.cron_minute.after', self.setCrons)
+
+    def setCrons(self):
         fireEvent('schedule.cron', 'searcher.all', self.allMovies, day = self.conf('cron_day'), hour = self.conf('cron_hour'), minute = self.conf('cron_minute'))
 
     def allMoviesView(self):
@@ -157,7 +162,7 @@ class Searcher(Plugin):
 
         ret = False
         for quality_type in movie['profile']['types']:
-            if not self.couldBeReleased(quality_type['quality']['identifier'] in pre_releases, release_dates):
+            if not self.conf('always_search') and not self.couldBeReleased(quality_type['quality']['identifier'] in pre_releases, release_dates):
                 log.info('Too early to search for %s, %s', (quality_type['quality']['identifier'], default_title))
                 continue
 
@@ -165,7 +170,7 @@ class Searcher(Plugin):
 
             # See if better quality is available
             for release in movie['releases']:
-                if release['quality']['order'] < quality_type['quality']['order'] and release['status_id'] not in [available_status.get('id'), ignored_status.get('id')]:
+                if release['quality']['order'] <= quality_type['quality']['order'] and release['status_id'] not in [available_status.get('id'), ignored_status.get('id')]:
                     has_better_quality += 1
 
             # Don't search for quality lower then already available.
@@ -285,10 +290,10 @@ class Searcher(Plugin):
                 if filedata == 'try_next':
                     return filedata
 
-            successful = fireEvent('download', data = data, movie = movie, manual = manual, filedata = filedata, single = True)
+            download_result = fireEvent('download', data = data, movie = movie, manual = manual, filedata = filedata, single = True)
+            log.debug('Downloader result: %s', download_result)
 
-            if successful:
-
+            if download_result:
                 try:
                     # Mark release as snatched
                     db = get_session()
@@ -298,6 +303,15 @@ class Searcher(Plugin):
 
                         done_status = fireEvent('status.get', 'done', single = True)
                         rls.status_id = done_status.get('id') if not renamer_enabled else snatched_status.get('id')
+
+                        # Save download-id info if returned
+                        if isinstance(download_result, dict):
+                            for key in download_result:
+                                rls_info = ReleaseInfo(
+                                    identifier = 'download_%s' % key,
+                                    value = toUnicode(download_result.get(key))
+                                )
+                                rls.info.append(rls_info)
                         db.commit()
 
                         log_movie = '%s (%s) in %s' % (getTitle(movie['library']), movie['library']['year'], rls.quality.label)
@@ -333,7 +347,7 @@ class Searcher(Plugin):
 
                 return True
 
-        log.info('Tried to download, but none of the "%s" downloaders are enabled', (data.get('type', '')))
+        log.info('Tried to download, but none of the "%s" downloaders are enabled or gave an error', (data.get('type', '')))
 
         return False
 
@@ -357,7 +371,7 @@ class Searcher(Plugin):
 
         return search_types
 
-    def correctMovie(self, nzb = {}, movie = {}, quality = {}, **kwargs):
+    def correctMovie(self, nzb = None, movie = None, quality = None, **kwargs):
 
         imdb_results = kwargs.get('imdb_results', False)
         retention = Env.setting('retention', section = 'nzb')

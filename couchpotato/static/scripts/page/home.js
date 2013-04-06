@@ -23,7 +23,7 @@ Page.Home = new Class({
 			'identifier': 'snatched',
 			'load_more': false,
 			'view': 'list',
-			'actions': [MA.IMDB, MA.Trailer, MA.Files, MA.Release, MA.Edit, MA.Readd, MA.Refresh, MA.Delete],
+			'actions': [MA.IMDB, MA.Trailer, MA.Release, MA.Refresh, MA.Delete],
 			'title': 'Snatched & Available',
 			'on_empty_element': new Element('div'),
 			'filter': {
@@ -37,7 +37,7 @@ Page.Home = new Class({
 			'identifier': 'soon',
 			'limit': 18,
 			'title': 'Available soon',
-			'description': 'These are being searches for and should be available soon as they will be released on DVD in the next few weeks.',
+			'description': 'These are being searched for and should be available soon as they will be released on DVD in the next few weeks.',
 			'on_empty_element': new Element('div').adopt(
 				new Element('h1', {'text': 'Available soon'}),
 				new Element('span', {'text': 'There are no movies available soon. Add some movies, so you have something to watch later.'})
