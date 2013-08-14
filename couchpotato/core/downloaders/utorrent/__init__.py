@@ -11,7 +11,7 @@ config = [{
             'list': 'download_providers',
             'name': 'utorrent',
             'label': 'uTorrent',
-            'description': 'Use <a href="http://www.utorrent.com/" target="_blank">uTorrent</a> to download torrents.',
+            'description': 'Use <a href="http://www.utorrent.com/" target="_blank">uTorrent</a> (3.0+) to download torrents.',
             'wizard': True,
             'options': [
                 {
@@ -37,32 +37,27 @@ config = [{
                     'description': 'Label to add torrent as.',
                 },
                 {
-                    'name': 'archivelabel',
-                    'description': 'Label to keep torrent.',
+                    'name': 'remove_complete',
+                    'label': 'Remove torrent',
+                    'default': False,
+                    'advanced': True,
+                    'type': 'bool',
+                    'description': 'Remove the torrent from uTorrent after it finished seeding.',
+                },
+                {
+                    'name': 'delete_files',
+                    'label': 'Remove files',
+                    'default': True,
+                    'type': 'bool',
+                    'advanced': True,
+                    'description': 'Also remove the leftover files.',
                 },
                 {
                     'name': 'paused',
                     'type': 'bool',
+                    'advanced': True,
                     'default': False,
                     'description': 'Add the torrent paused.',
-                },
-                {
-                    'name': 'waitseeding',
-                    'type': 'bool',
-                    'default': False,
-                    'description': 'Wait end of seeding before doing anything.',
-                },
-                {
-                    'name': 'autostop',
-                    'type': 'bool',
-                    'default': False,
-                    'description': 'Stop the torrent in uTorrent at end of seeding. (waitseeding required)',
-                },
-                {
-                    'name': 'autoremove',
-                    'type': 'bool',
-                    'default': False,
-                    'description': 'Remove the torrent from uTorrent at end of seeding. (waitseeding & autostop required)',
                 },
                 {
                     'name': 'manual',
@@ -70,6 +65,13 @@ config = [{
                     'type': 'bool',
                     'advanced': True,
                     'description': 'Disable this downloader for automated searches, but use it when I manually send a release.',
+                },
+                {
+                    'name': 'delete_failed',
+                    'default': True,
+                    'advanced': True,
+                    'type': 'bool',
+                    'description': 'Delete a release after the download has failed.',
                 },
             ],
         }

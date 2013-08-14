@@ -105,6 +105,7 @@ class Searcher(Plugin):
 
             for movie in movies:
                 movie_dict = movie.to_dict({
+                    'category': {},
                     'profile': {'types': {'quality': {}}},
                     'releases': {'status': {}, 'quality': {}},
                     'library': {'titles': {}, 'files':{}},
@@ -194,7 +195,7 @@ class Searcher(Plugin):
 
                 download_preference = self.conf('preferred_method')
                 if download_preference != 'both':
-                    sorted_results = sorted(sorted_results, key = lambda k: k['type'], reverse = (download_preference == 'torrent'))
+                    sorted_results = sorted(sorted_results, key = lambda k: k['type'][:3], reverse = (download_preference == 'torrent'))
 
                 # Check if movie isn't deleted while searching
                 if not db.query(Movie).filter_by(id = movie.get('id')).first():
@@ -393,23 +394,29 @@ class Searcher(Plugin):
 
         # Make sure it has required words
         required_words = splitString(self.conf('required_words').lower())
+        try: required_words = list(set(required_words + splitString(movie['category']['required'].lower())))
+        except: pass
+
         req_match = 0
         for req_set in required_words:
             req = splitString(req_set, '&')
             req_match += len(list(set(nzb_words) & set(req))) == len(req)
 
-        if self.conf('required_words') and req_match == 0:
+        if len(required_words) > 0  and req_match == 0:
             log.info2('Wrong: Required word missing: %s', nzb['name'])
             return False
 
         # Ignore releases
         ignored_words = splitString(self.conf('ignored_words').lower())
+        try: ignored_words = list(set(ignored_words + splitString(movie['category']['ignored'].lower())))
+        except: pass
+
         ignored_match = 0
         for ignored_set in ignored_words:
             ignored = splitString(ignored_set, '&')
             ignored_match += len(list(set(nzb_words) & set(ignored))) == len(ignored)
 
-        if self.conf('ignored_words') and ignored_match:
+        if len(ignored_words) > 0 and ignored_match:
             log.info2("Wrong: '%s' contains 'ignored words'", (nzb['name']))
             return False
 
