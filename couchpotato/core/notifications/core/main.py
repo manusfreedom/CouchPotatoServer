@@ -19,7 +19,7 @@ log = CPLog(__name__)
 
 class CoreNotifier(Notification):
 
-    m_lock = threading.Lock()
+    m_lock = None
 
     def __init__(self):
         super(CoreNotifier, self).__init__()
@@ -57,6 +57,7 @@ class CoreNotifier(Notification):
 
         self.messages = []
         self.listeners = []
+        self.m_lock = threading.Lock()
 
     def clean(self):
 
@@ -116,7 +117,7 @@ class CoreNotifier(Notification):
         prop_name = 'messages.last_check'
         last_check = tryInt(Env.prop(prop_name, default = 0))
 
-        messages = fireEvent('cp.messages', last_check = last_check, single = True)
+        messages = fireEvent('cp.messages', last_check = last_check, single = True) or []
 
         for message in messages:
             if message.get('time') > last_check:
@@ -127,7 +128,8 @@ class CoreNotifier(Notification):
 
         Env.prop(prop_name, value = last_check)
 
-    def notify(self, message = '', data = {}, listener = None):
+    def notify(self, message = '', data = None, listener = None):
+        if not data: data = {}
 
         db = get_session()
 
@@ -148,7 +150,8 @@ class CoreNotifier(Notification):
 
         return True
 
-    def frontend(self, type = 'notification', data = {}, message = None):
+    def frontend(self, type = 'notification', data = None, message = None):
+        if not data: data = {}
 
         log.debug('Notifying frontend')
 
@@ -187,11 +190,14 @@ class CoreNotifier(Notification):
                     'result': messages,
                 })
 
+        self.m_lock.acquire()
         self.listeners.append((callback, last_id))
+        self.m_lock.release()
 
 
     def removeListener(self, callback):
 
+        self.m_lock.acquire()
         for list_tuple in self.listeners:
             try:
                 listener, last_id = list_tuple
@@ -199,6 +205,7 @@ class CoreNotifier(Notification):
                     self.listeners.remove(list_tuple)
             except:
                 log.debug('Failed removing listener: %s', traceback.format_exc())
+        self.m_lock.release()
 
     def cleanMessages(self):
 
@@ -222,7 +229,7 @@ class CoreNotifier(Notification):
         recent = []
         try:
             index = map(itemgetter('message_id'), self.messages).index(last_id)
-            recent = self.messages[index+1:]
+            recent = self.messages[index + 1:]
         except:
             pass
 

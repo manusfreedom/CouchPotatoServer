@@ -137,7 +137,10 @@ class Release(Entity):
     files = ManyToMany('File')
     info = OneToMany('ReleaseInfo', cascade = 'all, delete-orphan')
 
-    def to_dict(self, deep = {}, exclude = []):
+    def to_dict(self, deep = None, exclude = None):
+        if not exclude: exclude = []
+        if not deep: deep = {}
+
         orig_dict = super(Release, self).to_dict(deep = deep, exclude = exclude)
 
         new_info = {}
@@ -200,7 +203,10 @@ class Profile(Entity):
     movie = OneToMany('Movie')
     types = OneToMany('ProfileType', cascade = 'all, delete-orphan')
 
-    def to_dict(self, deep = {}, exclude = []):
+    def to_dict(self, deep = None, exclude = None):
+        if not exclude: exclude = []
+        if not deep: deep = {}
+
         orig_dict = super(Profile, self).to_dict(deep = deep, exclude = exclude)
         orig_dict['core'] = orig_dict.get('core') or False
         orig_dict['hide'] = orig_dict.get('hide') or False
@@ -216,17 +222,9 @@ class Category(Entity):
     required = Field(Unicode(255))
     preferred = Field(Unicode(255))
     ignored = Field(Unicode(255))
+    destination = Field(Unicode(255))
 
     movie = OneToMany('Movie')
-    destination = ManyToOne('Destination')
-
-
-class Destination(Entity):
-    """"""
-
-    path = Field(Unicode(255))
-
-    category = OneToMany('Category')
 
 
 class ProfileType(Entity):

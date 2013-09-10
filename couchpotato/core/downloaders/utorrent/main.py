@@ -1,5 +1,5 @@
 from base64 import b16encode, b32decode
-from bencode import bencode, bdecode
+from bencode import bencode as benc, bdecode
 from couchpotato.core.downloaders.base import Downloader, StatusList
 from couchpotato.core.helpers.encoding import isInt, ss
 from couchpotato.core.helpers.variable import tryInt, tryFloat
@@ -10,7 +10,9 @@ from multipartpost import MultipartPostHandler
 import cookielib
 import httplib
 import json
+import os
 import re
+import stat
 import time
 import urllib
 import urllib2
@@ -20,7 +22,7 @@ log = CPLog(__name__)
 
 class uTorrent(Downloader):
 
-    type = ['torrent', 'torrent_magnet']
+    protocol = ['torrent', 'torrent_magnet']
     utorrent_api = None
 
     def connect(self):
@@ -34,9 +36,11 @@ class uTorrent(Downloader):
 
         return self.utorrent_api
 
-    def download(self, data, movie, filedata = None):
+    def download(self, data = None, movie = None, filedata = None):
+        if not movie: movie = {}
+        if not data: data = {}
 
-        log.debug('Sending "%s" (%s) to uTorrent.', (data.get('name'), data.get('type')))
+        log.debug('Sending "%s" (%s) to uTorrent.', (data.get('name'), data.get('protocol')))
 
         if not self.connect():
             return False
@@ -52,7 +56,7 @@ class uTorrent(Downloader):
             new_settings['seed_prio_limitul_flag'] = True
             log.info('Updated uTorrent settings to set a torrent to complete after it the seeding requirements are met.')
 
-        if settings.get('bt.read_only_on_complete'): #This doesnt work as this option seems to be not available through the api
+        if settings.get('bt.read_only_on_complete'): #This doesn't work as this option seems to be not available through the api. Mitigated with removeReadOnly function
             new_settings['bt.read_only_on_complete'] = False
             log.info('Updated uTorrent settings to not set the files to read only after completing.')
 
@@ -63,16 +67,16 @@ class uTorrent(Downloader):
         if self.conf('label'):
             torrent_params['label'] = self.conf('label')
 
-        if not filedata and data.get('type') == 'torrent':
+        if not filedata and data.get('protocol') == 'torrent':
             log.error('Failed sending torrent, no data')
             return False
 
-        if data.get('type') == 'torrent_magnet':
+        if data.get('protocol') == 'torrent_magnet':
             torrent_hash = re.findall('urn:btih:([\w]{32,40})', data.get('url'))[0].upper()
             torrent_params['trackers'] = '%0D%0A%0D%0A'.join(self.torrent_trackers)
         else:
             info = bdecode(filedata)["info"]
-            torrent_hash = sha1(bencode(info)).hexdigest().upper()
+            torrent_hash = sha1(benc(info)).hexdigest().upper()
             torrent_filename = self.createFileName(data, filedata, movie)
 
         if data.get('seed_ratio'):
@@ -88,12 +92,12 @@ class uTorrent(Downloader):
             torrent_hash = b16encode(b32decode(torrent_hash))
 
         # Send request to uTorrent
-        if data.get('type') == 'torrent_magnet':
+        if data.get('protocol') == 'torrent_magnet':
             self.utorrent_api.add_torrent_uri(data.get('url'))
         else:
             self.utorrent_api.add_torrent_file(torrent_filename, filedata)
 
-        # Change settings of added torrents
+        # Change settings of added torrent
         self.utorrent_api.set_torrent(torrent_hash, torrent_params)
         if self.conf('paused', default = 0):
             self.utorrent_api.pause_torrent(torrent_hash)
@@ -130,8 +134,10 @@ class uTorrent(Downloader):
             status = 'busy'
             if 'Finished' in item[21]:
                 status = 'completed'
+                self.removeReadOnly(item[26])
             elif 'Seeding' in item[21]:
                 status = 'seeding'
+                self.removeReadOnly(item[26])
 
             statuses.append({
                 'id': item[0],
@@ -140,15 +146,15 @@ class uTorrent(Downloader):
                 'seed_ratio': float(item[7]) / 1000,
                 'original_status': item[1],
                 'timeleft': str(timedelta(seconds = item[10])),
-                'folder': item[26],
+                'folder': ss(item[26]),
             })
 
         return statuses
 
-    def pause(self, download_info, pause = True):
+    def pause(self, item, pause = True):
         if not self.connect():
             return False
-        return self.utorrent_api.pause_torrent(download_info['id'], pause)
+        return self.utorrent_api.pause_torrent(item['id'], pause)
 
     def removeFailed(self, item):
         log.info('%s failed downloading, deleting...', item['name'])
@@ -161,6 +167,13 @@ class uTorrent(Downloader):
         if not self.connect():
             return False
         return self.utorrent_api.remove_torrent(item['id'], remove_data = delete_files)
+    
+    def removeReadOnly(self, folder):
+        #Removes all read-only flags in a folder
+        if folder and os.path.isdir(folder):
+            for root, folders, filenames in os.walk(folder):
+                for filename in filenames:
+                    os.chmod(os.path.join(root, filename), stat.S_IWRITE)
 
 class uTorrentAPI(object):
 
@@ -269,7 +282,9 @@ class uTorrentAPI(object):
 
         return settings_dict
 
-    def set_settings(self, settings_dict = {}):
+    def set_settings(self, settings_dict = None):
+        if not settings_dict: settings_dict = {}
+
         for key in settings_dict:
             if isinstance(settings_dict[key], bool):
                 settings_dict[key] = 1 if settings_dict[key] else 0

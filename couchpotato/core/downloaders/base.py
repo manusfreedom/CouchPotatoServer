@@ -11,7 +11,7 @@ log = CPLog(__name__)
 
 class Downloader(Provider):
 
-    type = []
+    protocol = []
     http_time_between_calls = 0
 
     torrent_sources = [
@@ -36,20 +36,23 @@ class Downloader(Provider):
     def __init__(self):
         addEvent('download', self._download)
         addEvent('download.enabled', self._isEnabled)
-        addEvent('download.enabled_types', self.getEnabledDownloadType)
+        addEvent('download.enabled_protocols', self.getEnabledProtocol)
         addEvent('download.status', self._getAllDownloadStatus)
         addEvent('download.remove_failed', self._removeFailed)
         addEvent('download.pause', self._pause)
         addEvent('download.process_complete', self._processComplete)
 
-    def getEnabledDownloadType(self):
-        for download_type in self.type:
-            if self.isEnabled(manual = True, data = {'type': download_type}):
-                return self.type
+    def getEnabledProtocol(self):
+        for download_protocol in self.protocol:
+            if self.isEnabled(manual = True, data = {'protocol': download_protocol}):
+                return self.protocol
 
         return []
 
-    def _download(self, data = {}, movie = {}, manual = False, filedata = None):
+    def _download(self, data = None, movie = None, manual = False, filedata = None):
+        if not movie: movie = {}
+        if not data: data = {}
+
         if self.isDisabled(manual, data):
             return
         return self.download(data = data, movie = movie, filedata = filedata)
@@ -91,11 +94,11 @@ class Downloader(Provider):
     def processComplete(self, item, delete_files):
         return
 
-    def isCorrectType(self, item_type):
-        is_correct = item_type in self.type
+    def isCorrectProtocol(self, item_protocol):
+        is_correct = item_protocol in self.protocol
 
         if not is_correct:
-            log.debug("Downloader doesn't support this type")
+            log.debug("Downloader doesn't support this protocol")
 
         return is_correct
 
@@ -119,7 +122,7 @@ class Downloader(Provider):
             except:
                 log.debug('Torrent hash "%s" wasn\'t found on: %s', (torrent_hash, source))
 
-        log.error('Failed converting magnet url to torrent: %s', (torrent_hash))
+        log.error('Failed converting magnet url to torrent: %s', torrent_hash)
         return False
 
     def downloadReturnId(self, download_id):
@@ -128,19 +131,25 @@ class Downloader(Provider):
             'id': download_id
         }
 
-    def isDisabled(self, manual, data):
+    def isDisabled(self, manual = False, data = None):
+        if not data: data = {}
+
         return not self.isEnabled(manual, data)
 
-    def _isEnabled(self, manual, data = {}):
+    def _isEnabled(self, manual, data = None):
+        if not data: data = {}
+
         if not self.isEnabled(manual, data):
             return
         return True
 
-    def isEnabled(self, manual, data = {}):
+    def isEnabled(self, manual = False, data = None):
+        if not data: data = {}
+
         d_manual = self.conf('manual', default = False)
         return super(Downloader, self).isEnabled() and \
-            ((d_manual and manual) or (d_manual is False)) and \
-            (not data or self.isCorrectType(data.get('type')))
+            (d_manual and manual or d_manual is False) and \
+            (not data or self.isCorrectProtocol(data.get('protocol')))
 
     def _pause(self, item, pause = True):
         if self.isDisabled(manual = True, data = {}):

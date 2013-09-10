@@ -9,6 +9,7 @@ from couchpotato.core.plugins.base import Plugin
 from couchpotato.core.settings.model import Library, File, Profile, Release, \
     ReleaseInfo
 from couchpotato.environment import Env
+from unrar2 import RarFile
 import errno
 import fnmatch
 import os
@@ -60,10 +61,10 @@ class Renamer(Plugin):
 
     def scanView(self, **kwargs):
 
-        async = tryInt(kwargs.get('async', None))
-        movie_folder = kwargs.get('movie_folder', None)
-        downloader = kwargs.get('downloader', None)
-        download_id = kwargs.get('download_id', None)
+        async = tryInt(kwargs.get('async', 0))
+        movie_folder = kwargs.get('movie_folder')
+        downloader = kwargs.get('downloader')
+        download_id = kwargs.get('download_id')
 
         download_info = {'folder': movie_folder} if movie_folder else None
         if download_info:
@@ -96,7 +97,7 @@ class Renamer(Plugin):
         elif self.conf('from') in self.conf('to'):
             log.error('The "to" can\'t be inside of the "from" folder. You\'ll get an infinite loop.')
             return
-        elif (movie_folder and movie_folder in [self.conf('to'), self.conf('from')]):
+        elif movie_folder and movie_folder in [self.conf('to'), self.conf('from')]:
             log.error('The "to" and "from" folders can\'t be inside of or the same as the provided movie folder.')
             return
 
@@ -126,10 +127,15 @@ class Renamer(Plugin):
         # Extend the download info with info stored in the downloaded release
         download_info = self.extendDownloadInfo(download_info)
 
+        # Unpack any archives
+        extr_files = None
+        if self.conf('unrar'):
+            folder, movie_folder, files, extr_files = self.extractFiles(folder = folder, movie_folder = movie_folder, files = files,
+                                                                        cleanup = self.conf('cleanup') and not self.downloadIsTorrent(download_info))
+
         groups = fireEvent('scanner.scan', folder = folder if folder else self.conf('from'),
                            files = files, download_info = download_info, return_ignored = False, single = True)
 
-        destination = self.conf('to')
         folder_name = self.conf('folder_name')
         file_name = self.conf('file_name')
         trailer_name = self.conf('trailer_name')
@@ -148,10 +154,6 @@ class Renamer(Plugin):
             remove_releases = []
 
             movie_title = getTitle(group['library'])
-            try:
-                destination = group['category']['path']
-            except:
-                destination = self.conf('to')
 
             # Add _UNKNOWN_ if no library item is connected
             if not group['library'] or not movie_title:
@@ -159,17 +161,34 @@ class Renamer(Plugin):
                 continue
             # Rename the files using the library data
             else:
-                group['library'] = fireEvent('library.update', identifier = group['library']['identifier'], single = True)
+                group['library'] = fireEvent('library.update.movie', identifier = group['library']['identifier'], single = True)
                 if not group['library']:
                     log.error('Could not rename, no library item to work with: %s', group_identifier)
                     continue
 
                 library = group['library']
+                library_ent = db.query(Library).filter_by(identifier = group['library']['identifier']).first()
+
                 movie_title = getTitle(library)
+
+                # Overwrite destination when set in category
+                destination = self.conf('to')
+                for movie in library_ent.movies:
+                    if movie.category and movie.category.destination and len(movie.category.destination) > 0:
+                        destination = movie.category.destination
+                        log.debug('Setting category destination for "%s": %s' % (movie_title, destination))
+                    else:
+                        log.debug('No category destination found for "%s"' % movie_title)
+
+                    break
 
                 # Find subtitle for renaming
                 group['before_rename'] = []
                 fireEvent('renamer.before', group)
+
+                # Add extracted files to the before_rename list
+                if extr_files:
+                    group['before_rename'].extend(extr_files)
 
                 # Remove weird chars from moviename
                 movie_name = re.sub(r"[\x00\/\\:\*\?\"<>\|]", '', movie_title)
@@ -197,6 +216,7 @@ class Renamer(Plugin):
                      'imdb_id': library['identifier'],
                      'cd': '',
                      'cd_nr': '',
+                     'mpaa': library['info'].get('mpaa', ''),
                 }
 
                 for file_type in group['files']:
@@ -204,8 +224,8 @@ class Renamer(Plugin):
                     # Move nfo depending on settings
                     if file_type is 'nfo' and not self.conf('rename_nfo'):
                         log.debug('Skipping, renaming of %s disabled', file_type)
-                        if self.conf('cleanup') and not (self.conf('file_action') != 'move' and self.downloadIsTorrent(download_info)):
-                            for current_file in group['files'][file_type]:
+                        for current_file in group['files'][file_type]:
+                            if self.conf('cleanup') and (not self.downloadIsTorrent(download_info) or self.fileIsAdded(current_file, group)):
                                 remove_files.append(current_file)
                         continue
 
@@ -319,17 +339,16 @@ class Renamer(Plugin):
                             cd += 1
 
                 # Before renaming, remove the lower quality files
-                library = db.query(Library).filter_by(identifier = group['library']['identifier']).first()
                 remove_leftovers = True
 
                 # Add it to the wanted list before we continue
-                if len(library.movies) == 0:
+                if len(library_ent.movies) == 0:
                     profile = db.query(Profile).filter_by(core = True, label = group['meta_data']['quality']['label']).first()
                     fireEvent('movie.add', params = {'identifier': group['library']['identifier'], 'profile_id': profile.id}, search_after = False)
                     db.expire_all()
-                    library = db.query(Library).filter_by(identifier = group['library']['identifier']).first()
+                    library_ent = db.query(Library).filter_by(identifier = group['library']['identifier']).first()
 
-                for movie in library.movies:
+                for movie in library_ent.movies:
 
                     # Mark movie "done" once it's found the quality with the finish check
                     try:
@@ -386,13 +405,14 @@ class Renamer(Plugin):
                                 db.commit()
 
                 # Remove leftover files
-                if self.conf('cleanup') and not self.conf('move_leftover') and remove_leftovers and \
-                        not (self.conf('file_action') != 'move' and self.downloadIsTorrent(download_info)):
-                    log.debug('Removing leftover files')
-                    for current_file in group['files']['leftover']:
-                        remove_files.append(current_file)
-                elif not remove_leftovers: # Don't remove anything
+                if not remove_leftovers: # Don't remove anything
                     break
+
+                log.debug('Removing leftover files')
+                for current_file in group['files']['leftover']:
+                    if self.conf('cleanup') and not self.conf('move_leftover') and \
+                            (not self.downloadIsTorrent(download_info) or self.fileIsAdded(current_file, group)):
+                        remove_files.append(current_file)
 
             # Remove files
             delete_folders = []
@@ -444,8 +464,7 @@ class Renamer(Plugin):
                         self.tagDir(group, 'failed_rename')
 
             # Tag folder if it is in the 'from' folder and it will not be removed because it is a torrent
-            if self.movieInFromFolder(movie_folder) and \
-                self.conf('file_action') != 'move' and self.downloadIsTorrent(download_info):
+            if self.movieInFromFolder(movie_folder) and self.downloadIsTorrent(download_info):
                 self.tagDir(group, 'renamed_already')
 
             # Remove matching releases
@@ -456,8 +475,7 @@ class Renamer(Plugin):
                 except:
                     log.error('Failed removing %s: %s', (release.identifier, traceback.format_exc()))
 
-            if group['dirname'] and group['parentdir'] and \
-                not (self.conf('file_action') != 'move' and self.downloadIsTorrent(download_info)):
+            if group['dirname'] and group['parentdir'] and not self.downloadIsTorrent(download_info):
                 try:
                     log.info('Deleting folder: %s', group['parentdir'])
                     self.deleteEmptyFolder(group['parentdir'])
@@ -477,7 +495,9 @@ class Renamer(Plugin):
 
         self.renaming_started = False
 
-    def getRenameExtras(self, extra_type = '', replacements = {}, folder_name = '', file_name = '', destination = '', group = {}, current_file = '', remove_multiple = False):
+    def getRenameExtras(self, extra_type = '', replacements = None, folder_name = '', file_name = '', destination = '', group = None, current_file = '', remove_multiple = False):
+        if not group: group = {}
+        if not replacements: replacements = {}
 
         replacements = replacements.copy()
         rename_files = {}
@@ -498,7 +518,7 @@ class Renamer(Plugin):
     def tagDir(self, group, tag):
 
         ignore_file = None
-        if isinstance(group, (dict)):
+        if isinstance(group, dict):
             for movie_file in sorted(list(group['files']['movie'])):
                 ignore_file = '%s.%s.ignore' % (os.path.splitext(movie_file)[0], tag)
                 break
@@ -517,22 +537,22 @@ Remove it if you want it to be renamed (again, or at least let it try again)
         if ignore_file:
             self.createFile(ignore_file, text)
 
-    def untagDir(self, folder, tag = None):
+    def untagDir(self, folder, tag = ''):
         if not os.path.isdir(folder):
             return
 
         # Remove any .ignore files
         for root, dirnames, filenames in os.walk(folder):
-            for filename in fnmatch.filter(filenames, '%s.ignore' % tag if tag else '*'):
+            for filename in fnmatch.filter(filenames, '*%s.ignore' % tag):
                 os.remove((os.path.join(root, filename)))
 
-    def hastagDir(self, folder, tag = None):
+    def hastagDir(self, folder, tag = ''):
         if not os.path.isdir(folder):
             return False
 
         # Find any .ignore files
         for root, dirnames, filenames in os.walk(folder):
-            if fnmatch.filter(filenames, '%s.ignore' % tag if tag else '*'):
+            if fnmatch.filter(filenames, '*%s.ignore' % tag):
                 return True
 
         return False
@@ -542,17 +562,23 @@ Remove it if you want it to be renamed (again, or at least let it try again)
         try:
             if forcemove:
                 shutil.move(old, dest)
-            elif self.conf('file_action') == 'hardlink':
-                try:
-                    link(old, dest)
-                except:
-                    log.error('Couldn\'t hardlink file "%s" to "%s". Copying instead. Error: %s. ', (old, dest, traceback.format_exc()))
-                    shutil.copy(old, dest)
             elif self.conf('file_action') == 'copy':
                 shutil.copy(old, dest)
-            elif self.conf('file_action') == 'move_symlink':
-                shutil.move(old, dest)
-                symlink(dest, old)
+            elif self.conf('file_action') == 'link':
+                # First try to hardlink
+                try:
+                    log.debug('Hardlinking file "%s" to "%s"...', (old, dest))
+                    link(old, dest)
+                except:
+                    # Try to simlink next
+                    log.debug('Couldn\'t hardlink file "%s" to "%s". Simlinking instead. Error: %s. ', (old, dest, traceback.format_exc()))
+                    shutil.copy(old, dest)
+                    try:
+                        symlink(dest, old + '.link')
+                        os.unlink(old)
+                        os.rename(old + '.link', old)
+                    except:
+                        log.error('Couldn\'t symlink file "%s" to "%s". Copied instead. Error: %s. ', (old, dest, traceback.format_exc()))
             else:
                 shutil.move(old, dest)
 
@@ -578,9 +604,9 @@ Remove it if you want it to be renamed (again, or at least let it try again)
         return True
 
     def doReplace(self, string, replacements, remove_multiple = False):
-        '''
+        """
         replace confignames with the real thing
-        '''
+        """
 
         replacements = replacements.copy()
         if remove_multiple:
@@ -708,7 +734,7 @@ Remove it if you want it to be renamed (again, or at least let it try again)
                                     db.commit()
 
                                     if self.conf('next_on_failed'):
-                                        fireEvent('searcher.try_next_release', movie_id = rel.movie_id)
+                                        fireEvent('movie.searcher.try_next_release', movie_id = rel.movie_id)
                                 elif item['status'] == 'completed':
                                     log.info('Download of %s completed!', item['name'])
                                     if self.statusInfoComplete(item):
@@ -757,10 +783,10 @@ Remove it if you want it to be renamed (again, or at least let it try again)
         for item in scan_items:
             # Ask the renamer to scan the item
             if item['scan']:
-                if item['pause'] and self.conf('file_action') == 'move_symlink':
+                if item['pause'] and self.conf('file_action') == 'link':
                     fireEvent('download.pause', item = item, pause = True, single = True)
                 fireEvent('renamer.scan', download_info = item)
-                if item['pause'] and self.conf('file_action') == 'move_symlink':
+                if item['pause'] and self.conf('file_action') == 'link':
                     fireEvent('download.pause', item = item, pause = False, single = True)
             if item['process_complete']:
                 #First make sure the files were succesfully processed
@@ -804,13 +830,13 @@ Remove it if you want it to be renamed (again, or at least let it try again)
             download_info.update({
                 'imdb_id': rls.movie.library.identifier,
                 'quality': rls.quality.identifier,
-                'type': rls_dict.get('info', {}).get('type')
+                'protocol': rls_dict.get('info', {}).get('protocol') or rls_dict.get('info', {}).get('type'),
             })
 
         return download_info
 
     def downloadIsTorrent(self, download_info):
-        return download_info and download_info.get('type') in ['torrent', 'torrent_magnet']
+        return download_info and download_info.get('protocol') in ['torrent', 'torrent_magnet']
 
     def fileIsAdded(self, src, group):
         if not group or not group.get('before_rename'):
@@ -819,6 +845,131 @@ Remove it if you want it to be renamed (again, or at least let it try again)
 
     def statusInfoComplete(self, item):
         return item['id'] and item['downloader'] and item['folder']
-    
+
     def movieInFromFolder(self, movie_folder):
         return movie_folder and self.conf('from') in movie_folder or not movie_folder
+
+    def extractFiles(self, folder = None, movie_folder = None, files = None, cleanup = False):
+        if not files: files = []
+
+        # RegEx for finding rar files
+        archive_regex = '(?P<file>^(?P<base>(?:(?!\.part\d+\.rar$).)*)\.(?:(?:part0*1\.)?rar)$)'
+        restfile_regex = '(^%s\.(?:part(?!0*1\.rar$)\d+\.rar$|[rstuvw]\d+$))'
+        extr_files = []
+
+        # Check input variables
+        if not folder:
+            folder = self.conf('from')
+
+        check_file_date = True
+        if movie_folder:
+            check_file_date = False
+
+        if not files:
+            for root, folders, names in os.walk(folder):
+                files.extend([os.path.join(root, name) for name in names])
+
+        # Find all archive files
+        archives = [re.search(archive_regex, name).groupdict() for name in files if re.search(archive_regex, name)]
+
+        #Extract all found archives
+        for archive in archives:
+            # Check if it has already been processed by CPS
+            if self.hastagDir(os.path.dirname(archive['file'])):
+                continue
+
+            # Find all related archive files
+            archive['files'] = [name for name in files if re.search(restfile_regex % re.escape(archive['base']), name)]
+            archive['files'].append(archive['file'])
+
+            # Check if archive is fresh and maybe still copying/moving/downloading, ignore files newer than 1 minute
+            if check_file_date:
+                file_too_new = False
+                for cur_file in archive['files']:
+                    if not os.path.isfile(cur_file):
+                        file_too_new = time.time()
+                        break
+                    file_time = [os.path.getmtime(cur_file), os.path.getctime(cur_file)]
+                    for t in file_time:
+                        if t > time.time() - 60:
+                            file_too_new = tryInt(time.time() - t)
+                            break
+
+                    if file_too_new:
+                        break
+
+                if file_too_new:
+                    try:
+                        time_string = time.ctime(file_time[0])
+                    except:
+                        try:
+                            time_string = time.ctime(file_time[1])
+                        except:
+                            time_string = 'unknown'
+
+                    log.info('Archive seems to be still copying/moving/downloading or just copied/moved/downloaded (created on %s), ignoring for now: %s', (time_string, os.path.basename(archive['file'])))
+                    continue
+
+            log.info('Archive %s found. Extracting...', os.path.basename(archive['file']))
+            try:
+                rar_handle = RarFile(archive['file'])
+                extr_path = os.path.join(self.conf('from'), os.path.relpath(os.path.dirname(archive['file']), folder))
+                self.makeDir(extr_path)
+                for packedinfo in rar_handle.infolist():
+                    if not packedinfo.isdir and not os.path.isfile(os.path.join(extr_path, os.path.basename(packedinfo.filename))):
+                        log.debug('Extracting %s...', packedinfo.filename)
+                        rar_handle.extract(condition = [packedinfo.index], path = extr_path, withSubpath = False, overwrite = False)
+                        extr_files.append(os.path.join(extr_path, os.path.basename(packedinfo.filename)))
+                del rar_handle
+            except Exception, e:
+                log.error('Failed to extract %s: %s %s', (archive['file'], e, traceback.format_exc()))
+                continue
+
+            # Delete the archive files
+            for filename in archive['files']:
+                if cleanup:
+                    try:
+                        os.remove(filename)
+                    except Exception, e:
+                        log.error('Failed to remove %s: %s %s', (filename, e, traceback.format_exc()))
+                        continue
+                files.remove(filename)
+
+        # Move the rest of the files and folders if any files are extracted to the from folder (only if folder was provided)
+        if extr_files and os.path.normpath(os.path.normcase(folder)) != os.path.normpath(os.path.normcase(self.conf('from'))):
+            for leftoverfile in list(files):
+                move_to = os.path.join(self.conf('from'), os.path.relpath(leftoverfile, folder))
+
+                try:
+                    self.makeDir(os.path.dirname(move_to))
+                    self.moveFile(leftoverfile, move_to, cleanup)
+                except Exception, e:
+                    log.error('Failed moving left over file %s to %s: %s %s', (leftoverfile, move_to, e, traceback.format_exc()))
+                    # As we probably tried to overwrite the nfo file, check if it exists and then remove the original
+                    if os.path.isfile(move_to):
+                        if cleanup:
+                            log.info('Deleting left over file %s instead...', leftoverfile)
+                            os.unlink(leftoverfile)
+                    else:
+                        continue
+
+                files.remove(leftoverfile)
+                extr_files.append(move_to)
+
+            if cleanup:
+                # Remove all left over folders
+                log.debug('Removing old movie folder %s...', movie_folder)
+                self.deleteEmptyFolder(movie_folder)
+
+            movie_folder = os.path.join(self.conf('from'), os.path.relpath(movie_folder, folder))
+            folder = self.conf('from')
+
+        if extr_files:
+            files.extend(extr_files)
+
+        # Cleanup files and folder if movie_folder was not provided
+        if not movie_folder:
+            files = []
+            folder = None
+
+        return folder, movie_folder, files, extr_files

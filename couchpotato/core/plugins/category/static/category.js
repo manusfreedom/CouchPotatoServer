@@ -33,6 +33,27 @@ var CategoryListBase = new Class({
 
 		})
 
+		// Add categories in renamer
+		self.settings.addEvent('create', function(){
+			var renamer_group = self.settings.tabs.renamer.groups.renamer;
+
+			self.categories.each(function(category){
+
+				var input = new Option.Directory('section_name', 'option.name', category.get('destination'), {
+					'name': category.get('label')
+				});
+					input.inject(renamer_group.getElement('.renamer_to'));
+					input.fireEvent('injected');
+
+					input.save = function(){
+						category.data.destination = input.getValue();
+						category.save();
+					};
+
+			});
+
+		})
+
 	},
 
 	createList: function(){
@@ -68,7 +89,7 @@ var CategoryListBase = new Class({
 			return category.data.id == id
 		}).pick()
 	},
-	
+
 	getAll: function(){
 		return this.categories;
 	},
@@ -229,7 +250,7 @@ var Category = new Class({
 				}
 			});
 
-		}).delay(delay, self)
+		}).delay(delay || 0, self)
 
 	},
 
@@ -241,7 +262,8 @@ var Category = new Class({
 			'label' : self.el.getElement('.category_label input').get('value'),
 			'required' : self.el.getElement('.category_required input').get('value'),
 			'preferred' : self.el.getElement('.category_preferred input').get('value'),
-			'ignored' : self.el.getElement('.category_ignored input').get('value')
+			'ignored' : self.el.getElement('.category_ignored input').get('value'),
+			'destination': self.data.destination
 		}
 
 		return data
@@ -249,6 +271,11 @@ var Category = new Class({
 
 	del: function(){
 		var self = this;
+		
+		if(self.data.label == undefined){
+			self.el.destroy();
+			return;
+		}
 
 		var label = self.el.getElement('.category_label input').get('value');
 		var qObj = new Question('Are you sure you want to delete <strong>"'+label+'"</strong>?', '', [{
