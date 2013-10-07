@@ -1,20 +1,19 @@
 from base64 import b16encode, b32decode
-from datetime import timedelta
-from hashlib import sha1
-import shutil
-from couchpotato.core.helpers.encoding import ss
-from rtorrent.err import MethodError
-
 from bencode import bencode, bdecode
 from couchpotato.core.downloaders.base import Downloader, StatusList
+from couchpotato.core.helpers.encoding import ss
 from couchpotato.core.logger import CPLog
+from datetime import timedelta
+from hashlib import sha1
 from rtorrent import RTorrent
-
+from rtorrent.err import MethodError
+import shutil, os
 
 log = CPLog(__name__)
 
 
 class rTorrent(Downloader):
+
     protocol = ['torrent', 'torrent_magnet']
     rt = None
 
@@ -92,6 +91,7 @@ class rTorrent(Downloader):
         if self.conf('label'):
             torrent_params['label'] = self.conf('label')
 
+
         if not filedata and data.get('protocol') == 'torrent':
             log.error('Failed sending torrent, no data')
             return False
@@ -117,9 +117,18 @@ class rTorrent(Downloader):
             # Send torrent to rTorrent
             torrent = self.rt.load_torrent(filedata)
 
+            if not torrent:
+                log.error('Unable to find the torrent, did it fail to load?')
+                return False
+
             # Set label
             if self.conf('label'):
                 torrent.set_custom(1, self.conf('label'))
+
+            if self.conf('directory') and self.conf('append_label'):
+                torrent.set_directory(os.path.join(self.conf('directory'), self.conf('label')))
+            elif self.conf('directory'):
+                torrent.set_directory(self.conf('directory'))
 
             # Set Ratio Group
             torrent.set_visible(group_name)
@@ -194,7 +203,7 @@ class rTorrent(Downloader):
         if torrent is None:
             return False
 
-        torrent.erase()  # just removes the torrent, doesn't delete data
+        torrent.erase() # just removes the torrent, doesn't delete data
 
         if delete_files:
             shutil.rmtree(item['folder'], True)

@@ -34,17 +34,6 @@ class MovieBase(MovieTypeBase):
         super(MovieBase, self).__init__()
         self.initType()
 
-        addApiView('movie.search', self.search, docs = {
-            'desc': 'Search the movie providers for a movie',
-            'params': {
-                'q': {'desc': 'The (partial) movie name you want to search for'},
-            },
-            'return': {'type': 'object', 'example': """{
-    'success': True,
-    'empty': bool, any movies returned or not,
-    'movies': array, movies found,
-}"""}
-        })
         addApiView('movie.list', self.listView, docs = {
             'desc': 'List movies in wanted list',
             'params': {
@@ -469,7 +458,7 @@ class MovieBase(MovieTypeBase):
                         fireEvent('release.delete', release.id, single = True)
 
             m.profile_id = params.get('profile_id', default_profile.get('id'))
-            m.category_id = tryInt(cat_id) if cat_id is not None and tryInt(cat_id) > 0 else None
+            m.category_id = tryInt(cat_id) if cat_id is not None and tryInt(cat_id) > 0 else (m.category_id or None)
         else:
             log.debug('Movie already exists, not updating: %s', params)
             added = False

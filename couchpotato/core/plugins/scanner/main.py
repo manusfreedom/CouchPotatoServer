@@ -1,7 +1,8 @@
 from couchpotato import get_session
 from couchpotato.core.event import fireEvent, addEvent
 from couchpotato.core.helpers.encoding import toUnicode, simplifyString, ss
-from couchpotato.core.helpers.variable import getExt, getImdb, tryInt
+from couchpotato.core.helpers.variable import getExt, getImdb, tryInt, \
+    splitString
 from couchpotato.core.logger import CPLog
 from couchpotato.core.plugins.base import Plugin
 from couchpotato.core.settings.model import File, Movie
@@ -24,7 +25,9 @@ class Scanner(Plugin):
         'media': 314572800, # 300MB
         'trailer': 1048576, # 1MB
     }
-    ignored_in_path = [os.path.sep + 'extracted' + os.path.sep, 'extracting', '_unpack', '_failed_', '_unknown_', '_exists_', '_failed_remove_', '_failed_rename_', '.appledouble', '.appledb', '.appledesktop', os.path.sep + '._', '.ds_store', 'cp.cpnfo'] #unpacking, smb-crap, hidden files
+    ignored_in_path = [os.path.sep + 'extracted' + os.path.sep, 'extracting', '_unpack', '_failed_', '_unknown_', '_exists_', '_failed_remove_',
+                       '_failed_rename_', '.appledouble', '.appledb', '.appledesktop', os.path.sep + '._', '.ds_store', 'cp.cpnfo',
+                       'thumbs.db', 'ehthumbs.db', 'desktop.ini'] #unpacking, smb-crap, hidden files
     ignore_names = ['extract', 'extracting', 'extracted', 'movie', 'movies', 'film', 'films', 'download', 'downloads', 'video_ts', 'audio_ts', 'bdmv', 'certificate']
     extensions = {
         'movie': ['mkv', 'wmv', 'avi', 'mpg', 'mpeg', 'mp4', 'm2ts', 'iso', 'img', 'mdf', 'ts', 'm4v'],
@@ -565,7 +568,7 @@ class Scanner(Plugin):
         if not imdb_id:
             try:
                 for nf in files['nfo']:
-                    imdb_id = getImdb(nf)
+                    imdb_id = getImdb(nf, check_inside = True)
                     if imdb_id:
                         log.debug('Found movie via nfo file: %s', nf)
                         nfo_file = nf
@@ -578,7 +581,7 @@ class Scanner(Plugin):
             try:
                 for filetype in files:
                     for filetype_file in files[filetype]:
-                        imdb_id = getImdb(filetype_file, check_inside = False)
+                        imdb_id = getImdb(filetype_file)
                         if imdb_id:
                             log.debug('Found movie via imdb in filename: %s', nfo_file)
                             break
@@ -741,8 +744,15 @@ class Scanner(Plugin):
 
     def createStringIdentifier(self, file_path, folder = '', exclude_filename = False):
 
-        identifier = file_path.replace(folder, '') # root folder
+        year = self.findYear(file_path)
+
+        identifier = file_path.replace(folder, '').lstrip(os.path.sep) # root folder
         identifier = os.path.splitext(identifier)[0] # ext
+
+        try:
+            path_split = splitString(identifier, os.path.sep)
+            identifier = path_split[-2] if len(path_split) > 1 and len(path_split[-2]) > len(path_split[-1]) else path_split[-1] # Only get filename
+        except: pass
 
         if exclude_filename:
             identifier = identifier[:len(identifier) - len(os.path.split(identifier)[-1])]
@@ -757,7 +767,6 @@ class Scanner(Plugin):
         identifier = re.sub(self.clean, '::', simplifyString(identifier)).strip(':')
 
         # Year
-        year = self.findYear(identifier)
         if year and identifier[:4] != year:
             identifier = '%s %s' % (identifier.split(year)[0].strip(), year)
         else:
@@ -819,6 +828,13 @@ class Scanner(Plugin):
         return None
 
     def findYear(self, text):
+
+        # Search year inside () or [] first
+        matches = re.search('(\(|\[)(?P<year>19[0-9]{2}|20[0-9]{2})(\]|\))', text)
+        if matches:
+            return matches.group('year')
+
+        # Search normal
         matches = re.search('(?P<year>19[0-9]{2}|20[0-9]{2})', text)
         if matches:
             return matches.group('year')
@@ -831,11 +847,11 @@ class Scanner(Plugin):
         guess = {}
         if file_name:
             try:
-                guess = guess_movie_info(toUnicode(file_name))
-                if guess.get('title') and guess.get('year'):
+                guessit = guess_movie_info(toUnicode(file_name))
+                if guessit.get('title') and guessit.get('year'):
                     guess = {
-                        'name': guess.get('title'),
-                        'year': guess.get('year'),
+                        'name': guessit.get('title'),
+                        'year': guessit.get('year'),
                     }
             except:
                 log.debug('Could not detect via guessit "%s": %s', (file_name, traceback.format_exc()))
@@ -843,7 +859,13 @@ class Scanner(Plugin):
         # Backup to simple
         cleaned = ' '.join(re.split('\W+', simplifyString(release_name)))
         cleaned = re.sub(self.clean, ' ', cleaned)
-        year = self.findYear(cleaned)
+
+        for year_str in [file_name, cleaned]:
+            if not year_str: continue
+            year = self.findYear(year_str)
+            if year:
+                break
+
         cp_guess = {}
 
         if year: # Split name on year

@@ -1,6 +1,5 @@
 from couchpotato.core.event import addEvent
-from couchpotato.core.helpers.encoding import simplifyString, toUnicode, ss
-from couchpotato.core.helpers.variable import md5
+from couchpotato.core.helpers.encoding import simplifyString, toUnicode
 from couchpotato.core.logger import CPLog
 from couchpotato.core.providers.info.base import MovieProvider
 import tmdb3
@@ -12,6 +11,7 @@ log = CPLog(__name__)
 class TheMovieDb(MovieProvider):
 
     def __init__(self):
+        addEvent('info.search', self.search, priority = 2)
         addEvent('movie.search', self.search, priority = 2)
         addEvent('movie.info', self.getInfo, priority = 2)
         addEvent('movie.info_by_tmdb', self.getInfo)
@@ -104,6 +104,7 @@ class TheMovieDb(MovieProvider):
                 year = None
 
             movie_data = {
+                'type': 'movie',
                 'via_tmdb': True,
                 'tmdb_id': movie.id,
                 'titles': [toUnicode(movie.title)],
@@ -129,10 +130,8 @@ class TheMovieDb(MovieProvider):
                 movie_data['titles'].append(movie.originaltitle)
                 for alt in movie.alternate_titles:
                     alt_name = alt.title
-                    if alt_name and not alt_name in movie_data['titles'] and alt_name.lower() != 'none' and alt_name is not None:
+                    if alt_name and alt_name not in movie_data['titles'] and alt_name.lower() != 'none' and alt_name is not None:
                         movie_data['titles'].append(alt_name)
-
-                movie_data['titles'] = list(set(movie_data['titles']))
 
             # Cache movie parsed
             self.setCache(cache_key, movie_data)
@@ -143,7 +142,7 @@ class TheMovieDb(MovieProvider):
 
         image_url = ''
         try:
-            image_url = getattr(movie, type).geturl(size='original')
+            image_url = getattr(movie, type).geturl(size = 'original')
         except:
             log.debug('Failed getting %s.%s for "%s"', (type, size, movie.title))
 
