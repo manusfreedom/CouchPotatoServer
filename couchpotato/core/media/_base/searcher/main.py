@@ -1,29 +1,28 @@
-from couchpotato import get_session
-from couchpotato.api import addApiView
-from couchpotato.core.event import addEvent, fireEvent
-from couchpotato.core.helpers.encoding import simplifyString, toUnicode
-from couchpotato.core.helpers.variable import md5, getTitle
-from couchpotato.core.logger import CPLog
-from couchpotato.core.media._base.searcher.base import SearcherBase
-from couchpotato.core.settings.model import Movie, Release, ReleaseInfo
-from couchpotato.environment import Env
-from inspect import ismethod, isfunction
 import datetime
 import re
-import time
-import traceback
+
+from couchpotato.api import addApiView
+from couchpotato.core.event import addEvent, fireEvent
+from couchpotato.core.helpers.encoding import simplifyString
+from couchpotato.core.helpers.variable import splitString, removeEmpty, removeDuplicate
+from couchpotato.core.logger import CPLog
+from couchpotato.core.media._base.searcher.base import SearcherBase
+
 
 log = CPLog(__name__)
 
 
 class Searcher(SearcherBase):
 
+    # noinspection PyMissingConstructor
     def __init__(self):
         addEvent('searcher.protocols', self.getSearchProtocols)
         addEvent('searcher.contains_other_quality', self.containsOtherQuality)
+        addEvent('searcher.correct_3d', self.correct3D)
         addEvent('searcher.correct_year', self.correctYear)
         addEvent('searcher.correct_name', self.correctName)
-        addEvent('searcher.download', self.download)
+        addEvent('searcher.correct_words', self.correctWords)
+        addEvent('searcher.search', self.search)
 
         addApiView('searcher.full_search', self.searchAllView, docs = {
             'desc': 'Starts a full search for all media',
@@ -49,76 +48,21 @@ class Searcher(SearcherBase):
         progress = fireEvent('searcher.progress', merge = True)
         return progress
 
-    def download(self, data, movie, manual = False):
+    def search(self, protocols, media, quality):
+        results = []
 
-        if not data.get('protocol'):
-            data['protocol'] = data['type']
-            data['type'] = 'movie'
+        for search_protocol in protocols:
+            protocol_results = fireEvent('provider.search.%s.%s' % (search_protocol, media.get('type')), media, quality, merge = True)
+            if protocol_results:
+                results += protocol_results
 
-        # Test to see if any downloaders are enabled for this type
-        downloader_enabled = fireEvent('download.enabled', manual, data, single = True)
+        sorted_results = sorted(results, key = lambda k: k['score'], reverse = True)
 
-        if downloader_enabled:
+        download_preference = self.conf('preferred_method', section = 'searcher')
+        if download_preference != 'both':
+            sorted_results = sorted(sorted_results, key = lambda k: k['protocol'][:3], reverse = (download_preference == 'torrent'))
 
-            snatched_status, done_status, active_status = fireEvent('status.get', ['snatched', 'done', 'active'], single = True)
-
-            # Download movie to temp
-            filedata = None
-            if data.get('download') and (ismethod(data.get('download')) or isfunction(data.get('download'))):
-                filedata = data.get('download')(url = data.get('url'), nzb_id = data.get('id'))
-                if filedata == 'try_next':
-                    return filedata
-
-            download_result = fireEvent('download', data = data, movie = movie, manual = manual, filedata = filedata, single = True)
-            log.debug('Downloader result: %s', download_result)
-
-            if download_result:
-                try:
-                    # Mark release as snatched
-                    db = get_session()
-                    rls = db.query(Release).filter_by(identifier = md5(data['url'])).first()
-                    if rls:
-                        renamer_enabled = Env.setting('enabled', 'renamer')
-                        fireEvent('release.update_status', rls.id, status = done_status if not renamer_enabled else snatched_status, single = True)
-
-                        # Save download-id info if returned
-                        if isinstance(download_result, dict):
-                            for key in download_result:
-                                rls_info = ReleaseInfo(
-                                    identifier = 'download_%s' % key,
-                                    value = toUnicode(download_result.get(key))
-                                )
-                                rls.info.append(rls_info)
-                        db.commit()
-
-                        log_movie = '%s (%s) in %s' % (getTitle(movie['library']), movie['library']['year'], rls.quality.label)
-                        snatch_message = 'Snatched "%s": %s' % (data.get('name'), log_movie)
-                        log.info(snatch_message)
-                        fireEvent('movie.snatched', message = snatch_message, data = rls.to_dict())
-
-                        # If renamer isn't used, mark movie done
-                        if not renamer_enabled:
-                            try:
-                                if movie['status_id'] == active_status.get('id'):
-                                    for profile_type in movie['profile']['types']:
-                                        if profile_type['quality_id'] == rls.quality.id and profile_type['finish']:
-                                            # Mark movie done
-                                            log.info('Renamer disabled, marking movie as finished: %s', log_movie)
-                                            mvie = db.query(Movie).filter_by(id = movie['id']).first()
-                                            mvie.status_id = done_status.get('id')
-                                            mvie.last_edit = int(time.time())
-                                            db.commit()
-                            except:
-                                log.error('Failed marking movie finished, renamer disabled: %s', traceback.format_exc())
-
-                except:
-                    log.error('Failed marking movie finished: %s', traceback.format_exc())
-
-                return True
-
-        log.info('Tried to download, but none of the "%s" downloaders are enabled or gave an error', (data.get('protocol')))
-
-        return False
+        return sorted_results
 
     def getSearchProtocols(self):
 
@@ -167,10 +111,10 @@ class Searcher(SearcherBase):
         # Hack for older movies that don't contain quality tag
         year_name = fireEvent('scanner.name_year', name, single = True)
         if len(found) == 0 and movie_year < datetime.datetime.now().year - 3 and not year_name.get('year', None):
-            if size > 3000: # Assume dvdr
+            if size > 3000:  # Assume dvdr
                 log.info('Quality was missing in name, assuming it\'s a DVD-R based on the size: %s', size)
                 found['dvdr'] = True
-            else: # Assume dvdrip
+            else:  # Assume dvdrip
                 log.info('Quality was missing in name, assuming it\'s a DVD-Rip based on the size: %s', size)
                 found['dvdrip'] = True
 
@@ -180,6 +124,17 @@ class Searcher(SearcherBase):
                 del found[allowed]
 
         return not (found.get(preferred_quality['identifier']) and len(found) == 1)
+
+    def correct3D(self, nzb, preferred_quality = None):
+        if not preferred_quality: preferred_quality = {}
+        if not preferred_quality.get('custom'): return
+
+        threed = preferred_quality['custom'].get('3d')
+
+        # Try guessing via quality tags
+        guess = fireEvent('quality.guess', [nzb.get('name')], single = True)
+
+        return threed == guess.get('is_3d')
 
     def correctYear(self, haystack, year, year_range):
 
@@ -207,15 +162,15 @@ class Searcher(SearcherBase):
         except: pass
 
         # Match longest name between []
-        try: check_names.append(max(check_name.split('['), key = len))
+        try: check_names.append(max(re.findall(r'[^[]*\[([^]]*)\]', check_name), key = len).strip())
         except: pass
 
-        for check_name in list(set(check_names)):
+        for check_name in removeDuplicate(check_names):
             check_movie = fireEvent('scanner.name_year', check_name, single = True)
 
             try:
-                check_words = filter(None, re.split('\W+', check_movie.get('name', '')))
-                movie_words = filter(None, re.split('\W+', simplifyString(movie_name)))
+                check_words = removeEmpty(re.split('\W+', check_movie.get('name', '')))
+                movie_words = removeEmpty(re.split('\W+', simplifyString(movie_name)))
 
                 if len(check_words) > 0 and len(movie_words) > 0 and len(list(set(check_words) - set(movie_words))) == 0:
                     return True
@@ -223,6 +178,50 @@ class Searcher(SearcherBase):
                 pass
 
         return False
+
+    def correctWords(self, rel_name, media):
+        media_title = fireEvent('searcher.get_search_title', media, single = True)
+        media_words = re.split('\W+', simplifyString(media_title))
+
+        rel_name = simplifyString(rel_name)
+        rel_words = re.split('\W+', rel_name)
+
+        # Make sure it has required words
+        required_words = splitString(self.conf('required_words', section = 'searcher').lower())
+        try: required_words = removeDuplicate(required_words + splitString(media['category']['required'].lower()))
+        except: pass
+
+        req_match = 0
+        for req_set in required_words:
+            req = splitString(req_set, '&')
+            req_match += len(list(set(rel_words) & set(req))) == len(req)
+
+        if len(required_words) > 0 and req_match == 0:
+            log.info2('Wrong: Required word missing: %s', rel_name)
+            return False
+
+        # Ignore releases
+        ignored_words = splitString(self.conf('ignored_words', section = 'searcher').lower())
+        try: ignored_words = removeDuplicate(ignored_words + splitString(media['category']['ignored'].lower()))
+        except: pass
+
+        ignored_match = 0
+        for ignored_set in ignored_words:
+            ignored = splitString(ignored_set, '&')
+            ignored_match += len(list(set(rel_words) & set(ignored))) == len(ignored)
+
+        if len(ignored_words) > 0 and ignored_match:
+            log.info2("Wrong: '%s' contains 'ignored words'", rel_name)
+            return False
+
+        # Ignore porn stuff
+        pron_tags = ['xxx', 'sex', 'anal', 'tits', 'fuck', 'porn', 'orgy', 'milf', 'boobs', 'erotica', 'erotic', 'cock', 'dick']
+        pron_words = list(set(rel_words) & set(pron_tags) - set(media_words))
+        if pron_words:
+            log.info('Wrong: %s, probably pr0n', rel_name)
+            return False
+
+        return True
 
 class SearchSetupError(Exception):
     pass

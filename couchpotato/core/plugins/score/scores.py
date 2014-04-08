@@ -1,8 +1,15 @@
+import re
+import traceback
+
 from couchpotato.core.event import fireEvent
 from couchpotato.core.helpers.encoding import simplifyString
 from couchpotato.core.helpers.variable import tryInt
+from couchpotato.core.logger import CPLog
 from couchpotato.environment import Env
-import re
+
+
+log = CPLog(__name__)
+
 
 name_scores = [
     # Tags
@@ -45,6 +52,7 @@ def nameScore(name, year, preferred_words):
     score += 100 * len(list(set(nzb_words) & set(preferred_words)))
 
     return score
+
 
 def nameRatioScore(nzb_name, movie_name):
     nzb_words = re.split('\W+', fireEvent('scanner.create_file_identifier', nzb_name, single = True))
@@ -158,5 +166,40 @@ def halfMultipartScore(nzb_name):
 
     if wrong_found == 1:
         return -30
+
+    return 0
+
+
+def sceneScore(nzb_name):
+
+    check_names = [nzb_name]
+
+    # Match names between "
+    try: check_names.append(re.search(r'([\'"])[^\1]*\1', nzb_name).group(0))
+    except: pass
+
+    # Match longest name between []
+    try: check_names.append(max(re.findall(r'[^[]*\[([^]]*)\]', nzb_name), key = len).strip())
+    except: pass
+
+    for name in check_names:
+
+        # Strip twice, remove possible file extensions
+        name = name.lower().strip(' "\'\.-_\[\]')
+        name = re.sub('\.([a-z0-9]{0,4})$', '', name)
+        name = name.strip(' "\'\.-_\[\]')
+
+        # Make sure year and groupname is in there
+        year = re.findall('(?P<year>19[0-9]{2}|20[0-9]{2})', name)
+        group = re.findall('\-([a-z0-9]+)$', name)
+
+        if len(year) > 0 and len(group) > 0:
+            try:
+                validate = fireEvent('release.validate', name, single = True)
+                if validate and tryInt(validate.get('score')) != 0:
+                    log.debug('Release "%s" scored %s, reason: %s', (nzb_name, validate['score'], validate['reasons']))
+                    return tryInt(validate.get('score'))
+            except:
+                log.error('Failed scoring scene: %s', traceback.format_exc())
 
     return 0

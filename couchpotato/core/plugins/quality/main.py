@@ -1,40 +1,54 @@
-from couchpotato import get_session
+import traceback
+import re
+
+from couchpotato import get_db
 from couchpotato.api import addApiView
 from couchpotato.core.event import addEvent
 from couchpotato.core.helpers.encoding import toUnicode, ss
-from couchpotato.core.helpers.variable import mergeDicts, md5, getExt
+from couchpotato.core.helpers.variable import mergeDicts, getExt, tryInt
 from couchpotato.core.logger import CPLog
 from couchpotato.core.plugins.base import Plugin
-from couchpotato.core.settings.model import Quality, Profile, ProfileType
-from sqlalchemy.sql.expression import or_
-import re
-import time
+from couchpotato.core.plugins.quality.index import QualityIndex
+
 
 log = CPLog(__name__)
 
 
 class QualityPlugin(Plugin):
 
+    _database = {
+        'quality': QualityIndex
+    }
+
     qualities = [
-        {'identifier': 'bd50', 'hd': True, 'size': (15000, 60000), 'label': 'BR-Disk', 'alternative': ['bd25'], 'allow': ['1080p'], 'ext':[], 'tags': ['bdmv', 'certificate', ('complete', 'bluray')]},
-        {'identifier': '1080p', 'hd': True, 'size': (4000, 20000), 'label': '1080p', 'width': 1920, 'height': 1080, 'alternative': [], 'allow': [], 'ext':['mkv', 'm2ts'], 'tags': ['m2ts']},
-        {'identifier': '720p', 'hd': True, 'size': (3000, 10000), 'label': '720p', 'width': 1280, 'height': 720, 'alternative': [], 'allow': [], 'ext':['mkv', 'ts']},
-        {'identifier': 'brrip', 'hd': True, 'size': (700, 7000), 'label': 'BR-Rip', 'alternative': ['bdrip'], 'allow': ['720p', '1080p'], 'ext':['avi'], 'tags': ['hdtv', 'hdrip', 'webdl', ('web', 'dl')]},
-        {'identifier': 'dvdr', 'size': (3000, 10000), 'label': 'DVD-R', 'alternative': [], 'allow': [], 'ext':['iso', 'img'], 'tags': ['pal', 'ntsc', 'video_ts', 'audio_ts']},
-        {'identifier': 'dvdrip', 'size': (600, 2400), 'label': 'DVD-Rip', 'width': 720, 'alternative': [], 'allow': [], 'ext':['avi', 'mpg', 'mpeg'], 'tags': [('dvd', 'rip'), ('dvd', 'xvid'), ('dvd', 'divx')]},
-        {'identifier': 'scr', 'size': (600, 1600), 'label': 'Screener', 'alternative': ['screener', 'dvdscr', 'ppvrip', 'dvdscreener', 'hdscr'], 'allow': ['dvdr', 'dvd'], 'ext':['avi', 'mpg', 'mpeg'], 'tags': ['webrip', ('web', 'rip')]},
-        {'identifier': 'r5', 'size': (600, 1000), 'label': 'R5', 'alternative': ['r6'], 'allow': ['dvdr'], 'ext':['avi', 'mpg', 'mpeg']},
-        {'identifier': 'tc', 'size': (600, 1000), 'label': 'TeleCine', 'alternative': ['telecine'], 'allow': [], 'ext':['avi', 'mpg', 'mpeg']},
-        {'identifier': 'ts', 'size': (600, 1000), 'label': 'TeleSync', 'alternative': ['telesync', 'hdts'], 'allow': [], 'ext':['avi', 'mpg', 'mpeg']},
-        {'identifier': 'cam', 'size': (600, 1000), 'label': 'Cam', 'alternative': ['camrip', 'hdcam'], 'allow': [], 'ext':['avi', 'mpg', 'mpeg']}
+        {'identifier': 'bd50', 'hd': True, 'allow_3d': True, 'size': (15000, 60000), 'label': 'BR-Disk', 'alternative': ['bd25'], 'allow': ['1080p'], 'ext':[], 'tags': ['bdmv', 'certificate', ('complete', 'bluray')]},
+        {'identifier': '1080p', 'hd': True, 'allow_3d': True, 'size': (4000, 20000), 'label': '1080p', 'width': 1920, 'height': 1080, 'alternative': [], 'allow': [], 'ext':['mkv', 'm2ts'], 'tags': ['m2ts', 'x264', 'h264']},
+        {'identifier': '720p', 'hd': True, 'allow_3d': True, 'size': (3000, 10000), 'label': '720p', 'width': 1280, 'height': 720, 'alternative': [], 'allow': [], 'ext':['mkv', 'ts'], 'tags': ['x264', 'h264']},
+        {'identifier': 'brrip', 'hd': True, 'size': (700, 7000), 'label': 'BR-Rip', 'alternative': ['bdrip'], 'allow': ['720p', '1080p'], 'ext':[], 'tags': ['hdtv', 'hdrip', 'webdl', ('web', 'dl')]},
+        {'identifier': 'dvdr', 'size': (3000, 10000), 'label': 'DVD-R', 'alternative': ['br2dvd'], 'allow': [], 'ext':['iso', 'img', 'vob'], 'tags': ['pal', 'ntsc', 'video_ts', 'audio_ts', ('dvd', 'r')]},
+        {'identifier': 'dvdrip', 'size': (600, 2400), 'label': 'DVD-Rip', 'width': 720, 'alternative': [], 'allow': [], 'ext':[], 'tags': [('dvd', 'rip'), ('dvd', 'xvid'), ('dvd', 'divx')]},
+        {'identifier': 'scr', 'size': (600, 1600), 'label': 'Screener', 'alternative': ['screener', 'dvdscr', 'ppvrip', 'dvdscreener', 'hdscr'], 'allow': ['dvdr', 'dvdrip', '720p', '1080p'], 'ext':[], 'tags': ['webrip', ('web', 'rip')]},
+        {'identifier': 'r5', 'size': (600, 1000), 'label': 'R5', 'alternative': ['r6'], 'allow': ['dvdr'], 'ext':[]},
+        {'identifier': 'tc', 'size': (600, 1000), 'label': 'TeleCine', 'alternative': ['telecine'], 'allow': [], 'ext':[]},
+        {'identifier': 'ts', 'size': (600, 1000), 'label': 'TeleSync', 'alternative': ['telesync', 'hdts'], 'allow': [], 'ext':[]},
+        {'identifier': 'cam', 'size': (600, 1000), 'label': 'Cam', 'alternative': ['camrip', 'hdcam'], 'allow': [], 'ext':[]}
     ]
     pre_releases = ['cam', 'ts', 'tc', 'r5', 'scr']
+    threed_tags = {
+        'hsbs': [('half', 'sbs')],
+        'fsbs': [('full', 'sbs')],
+        '3d': [],
+    }
+
+    cached_qualities = None
+    cached_order = None
 
     def __init__(self):
         addEvent('quality.all', self.all)
         addEvent('quality.single', self.single)
         addEvent('quality.guess', self.guess)
         addEvent('quality.pre_releases', self.preReleases)
+        addEvent('quality.order', self.getOrder)
 
         addApiView('quality.size.save', self.saveSize)
         addApiView('quality.list', self.allView, docs = {
@@ -46,6 +60,19 @@ class QualityPlugin(Plugin):
         })
 
         addEvent('app.initialize', self.fill, priority = 10)
+
+        addEvent('app.test', self.doTest)
+
+        self.order = []
+        self.addOrder()
+
+    def addOrder(self):
+        self.order = []
+        for q in self.qualities:
+            self.order.append(q.get('identifier'))
+
+    def getOrder(self):
+        return self.order
 
     def preReleases(self):
         return self.pre_releases
@@ -59,25 +86,31 @@ class QualityPlugin(Plugin):
 
     def all(self):
 
-        db = get_session()
+        if self.cached_qualities:
+            return self.cached_qualities
 
-        qualities = db.query(Quality).all()
+        db = get_db()
+
+        qualities = db.all('quality', with_doc = True)
 
         temp = []
         for quality in qualities:
-            q = mergeDicts(self.getQuality(quality.identifier), quality.to_dict())
+            quality = quality['doc']
+            q = mergeDicts(self.getQuality(quality.get('identifier')), quality)
             temp.append(q)
+
+        self.cached_qualities = temp
 
         return temp
 
     def single(self, identifier = ''):
 
-        db = get_session()
+        db = get_db()
         quality_dict = {}
 
-        quality = db.query(Quality).filter(or_(Quality.identifier == identifier, Quality.id == identifier)).first()
+        quality = db.get('quality', identifier, with_doc = True)['doc']
         if quality:
-            quality_dict = dict(self.getQuality(quality.identifier), **quality.to_dict())
+            quality_dict = mergeDicts(self.getQuality(quality['identifier']), quality)
 
         return quality_dict
 
@@ -89,144 +122,242 @@ class QualityPlugin(Plugin):
 
     def saveSize(self, **kwargs):
 
-        db = get_session()
-        quality = db.query(Quality).filter_by(identifier = kwargs.get('identifier')).first()
+        try:
+            db = get_db()
+            quality = db.get('quality', kwargs.get('identifier'), with_doc = True)
 
-        if quality:
-            setattr(quality, kwargs.get('value_type'), kwargs.get('value'))
-            db.commit()
+            if quality:
+                quality['doc'][kwargs.get('value_type')] = tryInt(kwargs.get('value'))
+                db.update(quality['doc'])
+
+            self.cached_qualities = None
+
+            return {
+                'success': True
+            }
+        except:
+            log.error('Failed: %s', traceback.format_exc())
 
         return {
-            'success': True
+            'success': False
         }
 
     def fill(self):
 
-        db = get_session()
+        try:
+            db = get_db()
 
-        order = 0
-        for q in self.qualities:
+            order = 0
+            for q in self.qualities:
 
-            # Create quality
-            qual = db.query(Quality).filter_by(identifier = q.get('identifier')).first()
+                db.insert({
+                    '_t': 'quality',
+                    'order': order,
+                    'identifier': q.get('identifier'),
+                    'size_min': tryInt(q.get('size')[0]),
+                    'size_max': tryInt(q.get('size')[1]),
+                })
 
-            if not qual:
-                log.info('Creating quality: %s', q.get('label'))
-                qual = Quality()
-                qual.order = order
-                qual.identifier = q.get('identifier')
-                qual.label = toUnicode(q.get('label'))
-                qual.size_min, qual.size_max = q.get('size')
-
-                db.add(qual)
-
-            # Create single quality profile
-            prof = db.query(Profile).filter(
-                    Profile.core == True
-                ).filter(
-                    Profile.types.any(quality = qual)
-                ).all()
-
-            if not prof:
                 log.info('Creating profile: %s', q.get('label'))
-                prof = Profile(
-                    core = True,
-                    label = toUnicode(qual.label),
-                    order = order
-                )
-                db.add(prof)
+                db.insert({
+                    '_t': 'profile',
+                    'order': order + 20,  # Make sure it goes behind other profiles
+                    'core': True,
+                    'qualities': [q.get('identifier')],
+                    'label': toUnicode(q.get('label')),
+                    'finish': [True],
+                    'wait_for': [0],
+                })
 
-                profile_type = ProfileType(
-                    quality = qual,
-                    profile = prof,
-                    finish = True,
-                    order = 0
-                )
-                prof.types.append(profile_type)
+                order += 1
 
-            order += 1
+            return True
+        except:
+            log.error('Failed: %s', traceback.format_exc())
 
-        db.commit()
-
-        time.sleep(0.3) # Wait a moment
-
-        return True
+        return False
 
     def guess(self, files, extra = None):
         if not extra: extra = {}
 
         # Create hash for cache
-        cache_key = md5(str([f.replace('.' + getExt(f), '') for f in files]))
+        cache_key = str([f.replace('.' + getExt(f), '') if len(getExt(f)) < 4 else f for f in files])
         cached = self.getCache(cache_key)
-        if cached and len(extra) == 0: return cached
+        if cached and len(extra) == 0:
+            return cached
 
         qualities = self.all()
+
+        # Start with 0
+        score = {}
+        for quality in qualities:
+            score[quality.get('identifier')] = {
+                'score': 0,
+                '3d': {}
+            }
+
         for cur_file in files:
             words = re.split('\W+', cur_file.lower())
 
-            found = {}
             for quality in qualities:
-                contains = self.containsTag(quality, words, cur_file)
-                if contains:
-                    found[quality['identifier']] = True
+                contains_score = self.containsTagScore(quality, words, cur_file)
+                threedscore = self.contains3D(quality, words, cur_file) if quality.get('allow_3d') else (0, None)
 
-            for quality in qualities:
-
-                # Check identifier
-                if quality['identifier'] in words:
-                    if len(found) == 0 or len(found) == 1 and found.get(quality['identifier']):
-                        log.debug('Found via identifier "%s" in %s', (quality['identifier'], cur_file))
-                        return self.setCache(cache_key, quality)
-
-                # Check alt and tags
-                contains = self.containsTag(quality, words, cur_file)
-                if contains:
-                    return self.setCache(cache_key, quality)
+                self.calcScore(score, quality, contains_score, threedscore)
 
         # Try again with loose testing
-        quality = self.guessLoose(cache_key, files = files, extra = extra)
-        if quality:
-            return self.setCache(cache_key, quality)
+        for quality in qualities:
+            loose_score = self.guessLooseScore(quality, extra = extra)
+            self.calcScore(score, quality, loose_score)
 
-        log.debug('Could not identify quality for: %s', files)
+        # Return nothing if all scores are 0
+        has_non_zero = 0
+        for s in score:
+            if score[s] > 0:
+                has_non_zero += 1
+
+        if not has_non_zero:
+            return None
+
+        heighest_quality = max(score, key = lambda p: score[p]['score'])
+        if heighest_quality:
+            for quality in qualities:
+                if quality.get('identifier') == heighest_quality:
+                    quality['is_3d'] = False
+                    if score[heighest_quality].get('3d'):
+                        quality['is_3d'] = True
+                    return self.setCache(cache_key, quality)
+
         return None
 
-    def containsTag(self, quality, words, cur_file = ''):
+    def containsTagScore(self, quality, words, cur_file = ''):
         cur_file = ss(cur_file)
+        score = 0
+
+        points = {
+            'identifier': 10,
+            'label': 10,
+            'alternative': 9,
+            'tags': 9,
+            'ext': 3,
+        }
 
         # Check alt and tags
-        for tag_type in ['alternative', 'tags', 'label']:
+        for tag_type in ['identifier', 'alternative', 'tags', 'label']:
             qualities = quality.get(tag_type, [])
             qualities = [qualities] if isinstance(qualities, (str, unicode)) else qualities
 
             for alt in qualities:
-                if (isinstance(alt, tuple) and '.'.join(alt) in '.'.join(words)) or (isinstance(alt, (str, unicode)) and ss(alt.lower()) in cur_file.lower()):
+                if isinstance(alt, tuple):
+                    if len(set(words) & set(alt)) == len(alt):
+                        log.debug('Found %s via %s %s in %s', (quality['identifier'], tag_type, quality.get(tag_type), cur_file))
+                        score += points.get(tag_type)
+
+                if isinstance(alt, (str, unicode)) and ss(alt.lower()) in cur_file.lower():
                     log.debug('Found %s via %s %s in %s', (quality['identifier'], tag_type, quality.get(tag_type), cur_file))
-                    return True
+                    score += points.get(tag_type) / 2
 
             if list(set(qualities) & set(words)):
                 log.debug('Found %s via %s %s in %s', (quality['identifier'], tag_type, quality.get(tag_type), cur_file))
-                return True
+                score += points.get(tag_type)
 
-        return
+        # Check extention
+        for ext in quality.get('ext', []):
+            if ext == words[-1]:
+                log.debug('Found %s extension in %s', (ext, cur_file))
+                score += points['ext']
 
-    def guessLoose(self, cache_key, files = None, extra = None):
+        return score
+
+    def contains3D(self, quality, words, cur_file = ''):
+        cur_file = ss(cur_file)
+
+        for key in self.threed_tags:
+            tags = self.threed_tags.get(key, [])
+
+            for tag in tags:
+                if (isinstance(tag, tuple) and '.'.join(tag) in '.'.join(words)) or (isinstance(tag, (str, unicode)) and ss(tag.lower()) in cur_file.lower()):
+                    log.debug('Found %s in %s', (tag, cur_file))
+                    return 1, key
+
+            if list(set([key]) & set(words)):
+                log.debug('Found %s in %s', (tag, cur_file))
+                return 1, key
+
+        return 0, None
+
+    def guessLooseScore(self, quality, extra = None):
+
+        score = 0
 
         if extra:
-            for quality in self.all():
 
-                # Check width resolution, range 20
-                if quality.get('width') and (quality.get('width') - 20) <= extra.get('resolution_width', 0) <= (quality.get('width') + 20):
-                    log.debug('Found %s via resolution_width: %s == %s', (quality['identifier'], quality.get('width'), extra.get('resolution_width', 0)))
-                    return self.setCache(cache_key, quality)
+            # Check width resolution, range 20
+            if quality.get('width') and (quality.get('width') - 20) <= extra.get('resolution_width', 0) <= (quality.get('width') + 20):
+                log.debug('Found %s via resolution_width: %s == %s', (quality['identifier'], quality.get('width'), extra.get('resolution_width', 0)))
+                score += 5
 
-                # Check height resolution, range 20
-                if quality.get('height') and (quality.get('height') - 20) <= extra.get('resolution_height', 0) <= (quality.get('height') + 20):
-                    log.debug('Found %s via resolution_height: %s == %s', (quality['identifier'], quality.get('height'), extra.get('resolution_height', 0)))
-                    return self.setCache(cache_key, quality)
+            # Check height resolution, range 20
+            if quality.get('height') and (quality.get('height') - 20) <= extra.get('resolution_height', 0) <= (quality.get('height') + 20):
+                log.debug('Found %s via resolution_height: %s == %s', (quality['identifier'], quality.get('height'), extra.get('resolution_height', 0)))
+                score += 5
 
-            if 480 <= extra.get('resolution_width', 0) <= 720:
-                log.debug('Found as dvdrip')
-                return self.setCache(cache_key, self.single('dvdrip'))
+            if quality.get('identifier') == 'dvdrip' and 480 <= extra.get('resolution_width', 0) <= 720:
+                log.debug('Add point for correct dvdrip resolutions')
+                score += 1
 
-        return None
+        return score
+
+    def calcScore(self, score, quality, add_score, threedscore = (0, None)):
+
+        score[quality['identifier']]['score'] += add_score
+
+        threedscore, threedtag = threedscore
+        if threedscore and threedtag:
+            if threedscore not in score[quality['identifier']]['3d']:
+                score[quality['identifier']]['3d'][threedtag] = 0
+
+            score[quality['identifier']]['3d'][threedtag] += threedscore
+
+        # Set order for allow calculation (and cache)
+        if not self.cached_order:
+            self.cached_order = {}
+            for q in self.qualities:
+                self.cached_order[q.get('identifier')] = self.qualities.index(q)
+
+        if add_score != 0:
+            for allow in quality.get('allow', []):
+                score[allow]['score'] -= 40 if self.cached_order[allow] < self.cached_order[quality['identifier']] else 5
+
+    def doTest(self):
+
+        tests = {
+            'Movie Name (1999)-DVD-Rip.avi': 'dvdrip',
+            'Movie Name 1999 720p Bluray.mkv': '720p',
+            'Movie Name 1999 BR-Rip 720p.avi': 'brrip',
+            'Movie Name 1999 720p Web Rip.avi': 'scr',
+            'Movie Name 1999 Web DL.avi': 'brrip',
+            'Movie.Name.1999.1080p.WEBRip.H264-Group': 'scr',
+            'Movie.Name.1999.DVDRip-Group': 'dvdrip',
+            'Movie.Name.1999.DVD-Rip-Group': 'dvdrip',
+            'Movie.Name.1999.DVD-R-Group': 'dvdr',
+            'Movie.Name.Camelie.1999.720p.BluRay.x264-Group': '720p',
+            'Movie.Name.2008.German.DL.AC3.1080p.BluRay.x264-Group': '1080p',
+            'Movie.Name.2004.GERMAN.AC3D.DL.1080p.BluRay.x264-Group': '1080p',
+        }
+
+        correct = 0
+        for name in tests:
+            success = self.guess([name]).get('identifier') == tests[name]
+            if not success:
+                log.error('%s failed check, thinks it\'s %s', (name, self.guess([name]).get('identifier')))
+
+            correct += success
+
+        if correct == len(tests):
+            log.info('Quality test successful')
+            return True
+        else:
+            log.error('Quality test failed: %s out of %s succeeded', (correct, len(tests)))
+
+
